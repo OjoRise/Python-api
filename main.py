@@ -179,3 +179,15 @@ async def search_and_recommend(request: Request):
             yield "질문을 잘 알아듣지 못했어요.\n"
 
     return StreamingResponse(get_response(), media_type="text/plain")
+
+@app.get("/")
+def root():
+    return {"message": "FastAPI is running!"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+
