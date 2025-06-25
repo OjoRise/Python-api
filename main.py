@@ -1,10 +1,12 @@
 import os
-import json
 import asyncio
+import json
 from datetime import datetime
 from typing import List
 from dateutil.parser import parse
-from fastapi import FastAPI, Request, APIRouter
+from dotenv import load_dotenv
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -14,25 +16,21 @@ from qdrant_client.models import (
     PayloadSchemaType, Filter, FieldCondition, MatchAny
 )
 from openai import OpenAI
-from dotenv import load_dotenv
 
 load_dotenv()
+
+openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+embedding_model = "text-embedding-3-small"
 
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:8080",
-        "https://yople.vercel.app",
-        "https://backend-ojorise.onrender.com"
-    ],
+    allow_origins=["http://localhost:3000", "http://localhost:8080"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 qdrant = QdrantClient(
     url=os.getenv("QDRANT_URL"),
     api_key=os.getenv("QDRANT_API_KEY"),
@@ -41,8 +39,11 @@ qdrant = QdrantClient(
 )
 
 collection_name = "plan_collection"
-required_vector_dim = 1536
-fields_to_index = ["eligibility", "mobileType"]
+if not qdrant.collection_exists(collection_name):
+    qdrant.create_collection(
+        collection_name=collection_name,
+        vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
+    )
 
 class Plan(BaseModel):
     planId: int
@@ -68,71 +69,31 @@ class UserProfile(BaseModel):
     familyBundle: str
     tongName: str
 
-def generate_plan_text(plan: Plan) -> str:
-    return (
-        f"{plan.name} 요금제, 기본 데이터 {plan.baseDataGb}GB, "
-        f"일일 {plan.dailyDataGb}GB, 공유 {plan.sharingDataGb}GB, "
-        f"월 {plan.monthlyFee}원, 통화 {plan.voiceCallPrice}분, "
-        f"SMS {plan.sms}건, 속도제한 {plan.throttleSpeedKbps}Kbps, "
-        f"대상 {plan.eligibility}, 망 {plan.mobileType}, "
-        f"데이터 {plan.isOnline}, 설명 {plan.description}"
+@app.post("/vectorize")
+def vectorize_plans(plans: List[Plan]):
+    if collection_name in qdrant.get_collections().collections:
+        qdrant.delete_collection(collection_name=collection_name)
+    qdrant.create_collection(
+        collection_name=collection_name,
+        vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
     )
-
-router = APIRouter()
-
-@router.post("/vectorize")
-async def vectorize_plans(plans: List[Plan]):
-    if qdrant.collection_exists(collection_name):
-        info = qdrant.get_collection(collection_name)
-        current_dim = info.config.params.vectors.size
-        if current_dim != required_vector_dim:
-            qdrant.delete_collection(collection_name)
-            qdrant.create_collection(
-                collection_name,
-                vectors_config=VectorParams(size=required_vector_dim, distance=Distance.COSINE),
-            )
-    else:
-        qdrant.create_collection(
-            collection_name,
-            vectors_config=VectorParams(size=required_vector_dim, distance=Distance.COSINE),
+    for field in ["eligibility", "mobileType"]:
+        qdrant.create_payload_index(
+            collection_name=collection_name,
+            field_name=field,
+            field_schema=PayloadSchemaType.KEYWORD
         )
-
-    for field in fields_to_index:
-        try:
-            qdrant.create_payload_index(
-                collection_name=collection_name,
-                field_name=field,
-                field_schema=PayloadSchemaType.KEYWORD,
-            )
-        except Exception as e:
-            print(f"[Warning] 인덱스 생성 실패: {field} - {e}")
-
     points = []
     for plan in plans:
-        text = generate_plan_text(plan)
-        embedding = openai.embeddings.create(
-            model="text-embedding-3-small",
-            input=text
-        ).data[0].embedding
-
-        payload = plan.dict(include={"planId", "name", "eligibility", "mobileType", "isOnline"})
-        points.append(PointStruct(id=plan.planId, vector=embedding, payload=payload))
-
+        text = (
+            f"{plan.name} 요금제, 기본 데이터 {plan.baseDataGb}GB, 일일 {plan.dailyDataGb}GB, 공유 {plan.sharingDataGb}GB, "
+            f"월 {plan.monthlyFee}원, 통화 {plan.voiceCallPrice}분, SMS {plan.sms}건, 속도제한 {plan.throttleSpeedKbps}Kbps, "
+            f"대상 {plan.eligibility}, 망 {plan.mobileType}, 데이터 {plan.isOnline}, 설명 {plan.description}"
+        )
+        embedding = openai.embeddings.create(model=embedding_model, input=text).data[0].embedding
+        points.append(PointStruct(id=plan.planId, vector=embedding, payload=plan.dict()))
     qdrant.upsert(collection_name=collection_name, points=points)
     return {"status": "ok", "inserted": len(points)}
-
-app.include_router(router)
-
-@app.get("/")
-def root():
-    return {"message": "FastAPI is running!"}
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
-
-
 
 @app.post("/search")
 async def search_and_recommend(request: Request):
@@ -140,17 +101,18 @@ async def search_and_recommend(request: Request):
     query = body.get("query")
     user_profile_raw = body.get("userProfile")
     ambiguous_count = body.get("ambiguousCount")
-    
     history = body.get("history")
+
     formatted_history = "\n".join(f"사용자: {msg}" for msg in history)
-
     eligibilityList = ["ALL"]
-    birthday_str = user_profile_raw.get("birthdate")
-    if birthday_str:
-        birthday = parse(birthday_str)
-        today = datetime.today()
-        age = today.year - birthday.year - ((today.month, today.day) < (birthday.month, birthday.day))
 
+    def get_age(birthdate):
+        birthday = parse(birthdate)
+        today = datetime.today()
+        return today.year - birthday.year - ((today.month, today.day) < (birthday.month, birthday.day))
+
+    if birth := user_profile_raw.get("birthdate"):
+        age = get_age(birth)
         if age <= 12:
             eligibilityList.append("KID")
         elif age <= 18:
@@ -160,77 +122,122 @@ async def search_and_recommend(request: Request):
         elif age >= 65:
             eligibilityList.append("OLD")
 
-    if not query or not user_profile_raw:
-        return JSONResponse(content={"status": False, "message": "query and userProfile are required"})
+    system_prompt = f"""
+당신은 통신 요금제 추천을 위한 사용자 프로필 보정 도우미입니다.
 
-    def update_profile_with_gpt(formatted_history: str, user_profile_raw: dict, query: str, eligibilityList: list):
-        system_prompt = (
-    "당신은 통신 요금제 추천을 위한 사용자 프로필 보정 도우미입니다.\n"
-    "당신의 임무는 다음 4가지 정보를 바탕으로 **정확한 userProfile과 eligibilityList를 추론하여 보완하는 것**입니다:\n"
-    "① 현재 질문\n② 과거 대화 기록\n③ 기본 제공된 eligibilityList\n④ 기본 userProfile\n\n"
+다음 4가지 정보를 바탕으로 동작합니다:
+① 현재 질문
+② 대화 히스토리
+③ 초기 userProfile
+④ 초기 eligibilityList
 
-    "아래 조건을 반드시 지켜주세요:\n"
-    "- userProfile에는 `birthdate`, `telecomProvider`, `planName`, `familyBundle`, `tongName`을 모두 포함하세요.\n"
-    "- `birthdate`가 있다면, 반드시 나이를 계산하여 eligibilityList에 반영하세요.\n"
-    "- 질문이나 대화 내역에 나이대 또는 특수계층(노인, 청소년, 아동 등)이 명시되어 있다면 그에 맞게 eligibilityList를 보정하세요.\n"
-    "- 기본 프로필이 부정확하더라도 질문 또는 히스토리에서 유추 가능한 정보가 있다면 수정하세요.\n"
-    "- eligibilityList는 반드시 `['ALL']`을 포함하며, 조건에 맞는 코드를 추가하세요 (예: `['ALL', 'OLD']`).\n"
+🎯 먼저 다음을 판단하세요:
+- 질문이 **요금제 추천 요청**인지
+- 아니면 **인삿말 / 의미 없는 말 / 설명 요청**인지
 
-    "🎯 최종 출력은 아래 형식의 JSON만 허용됩니다 (설명 절대 금지):\n"
-    '{ "userProfile": {...}, "eligibilityList": ["ALL", "OLD"] }\n\n'
+────────────────────────
 
-    "📌 eligibilityList 코드 기준:\n"
-    "- 나이 ≤ 12세: 'KID'\n"
-    "- 나이 ≤ 18세: 'BOY'\n"
-    "- 나이 ≤ 34세: 'YOUTH'\n"
-    "- 나이 ≥ 65세: 'OLD'\n"
-    "- 질문에 '시니어', '노인' 등 언급되면 나이와 무관해도 'OLD' 포함\n"
+📌 만약 아래에 해당한다면 반드시 해당 JSON만 출력하세요:
 
-    "🔒 절대 지켜야 할 사항:\n"
-    "1. 출력은 JSON 외 텍스트 없이\n"
-    "2. eligibilityList는 항상 ['ALL'] 포함하며 필요한 코드를 덧붙임\n"
-    "3. ambiguous_count는 출력하지 마세요\n"
-)
+1️⃣ 인삿말 또는 자기소개 포함된 경우:
+{{
+  "status": false,
+  "item": [],
+  "message": "\\n\\n안녕하세요, 여러분들을 도와줄 AI 챗봇 홀맨입니다."
+}}
 
-        user_prompt = f"""
+2️⃣ 의미 없는 말/감탄사/테스트 입력:
+→ ambiguous_count >= 3 이면:
+{{
+  "status": false,
+  "item": [],
+  "message": "\\n\\n질문을 잘 알아듣지 못했어요. LG U+ 고객센터에 문의해주시길 바랍니다."
+}}
+
+→ ambiguous_count < 3 이면:
+{{
+  "status": false,
+  "item": [],
+  "message": "\\n\\n질문을 잘 알아듣지 못했어요."
+}}
+
+3️⃣ 요금제에 대한 설명만 필요한 경우:
+→ 설명만 하세요. 추천은 하지 마세요.
+
+────────────────────────
+
+📦 나머지 경우(즉, 요금제 추천 요청일 경우)에는 다음을 수행하세요:
+
+1. userProfile에는 다음 필드를 반드시 포함:
+   - birthdate, telecomProvider, planName, familyBundle, tongName
+
+2. birthdate가 있다면 age 계산 → eligibilityList 보정:
+   - 나이 ≤ 12세: 'KID'
+   - 나이 ≤ 18세: 'BOY'
+   - 나이 ≤ 34세: 'YOUTH'
+   - 나이 ≥ 65세: 'OLD'
+
+3. 질문이나 히스토리에 연령 언급되면 그에 맞는 eligibility를 추가
+
+4. eligibilityList는 항상 ['ALL'] 포함
+
+5. 기존 userProfile이 틀려도 문맥상 확실하다면 수정
+
+🔐 최종 출력은 반드시 아래 JSON 형식으로만:
+{{
+  "userProfile": {{...}},
+  "eligibilityList": ["ALL", "OLD"]
+}}
+"""
+
+
+    user_prompt = f"""
 ### 현재 질문
 {query}
 
 ### 대화 히스토리
 {formatted_history}
 
-### 기본 프로필
+### 초기 userProfile
 {json.dumps(user_profile_raw, ensure_ascii=False)}
+
+### 초기 eligibilityList
+{json.dumps(eligibilityList, ensure_ascii=False)}
+
+### ambiguous_count
+{ambiguous_count}
 """
 
-        response = openai.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-        )
-
-        content = response.choices[0].message.content
-        try:
-            parsed = json.loads(content)
-            return parsed.get("userProfile", user_profile_raw), parsed.get("eligibilityList", ['ALL'])
-        except json.JSONDecodeError:
-            return user_profile_raw, eligibilityList
-
-    new_user_profile, new_eligibilityList = update_profile_with_gpt(
-        formatted_history, user_profile_raw, query, eligibilityList
+    gpt_response = openai.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.2,
     )
 
-    print(new_user_profile)
-    print(new_eligibilityList)
-    
-    query_vec = openai.embeddings.create(
-            model="text-embedding-3-small",
-            input=query
-        ).data[0].embedding
-    
+    content = gpt_response.choices[0].message.content
+    try:
+        parsed = json.loads(content)
+        if parsed.get("status") is False:
+            async def stream_json_message():
+                json_str = json.dumps(parsed, ensure_ascii=False)
+                for ch in json_str:
+                    yield ch
+                    await asyncio.sleep(0.002)
+                yield "\n"  # JSON 끝난 후 구분자
+                for ch in parsed.get("message", ""):
+                    yield ch
+                    await asyncio.sleep(0.005)
+            return StreamingResponse(stream_json_message(), media_type="text/plain")
+        new_user_profile = parsed.get("userProfile", user_profile_raw)
+        new_eligibilityList = parsed.get("eligibilityList", eligibilityList)
+    except json.JSONDecodeError:
+        new_user_profile = user_profile_raw
+        new_eligibilityList = eligibilityList
+
+    query_vec = openai.embeddings.create(model=embedding_model, input=query).data[0].embedding
     hits = qdrant.search(
         collection_name=collection_name,
         query_vector=query_vec,
@@ -244,12 +251,9 @@ async def search_and_recommend(request: Request):
             ]
         )
     )
-    print(hits)
-    
-    similar = [h.payload for h in hits]
-    plans_json = json.dumps(similar, ensure_ascii=False, indent=2)
+    plans = [h.payload for h in hits]
+    plans_json = json.dumps(plans, ensure_ascii=False)
 
-    
     prompt = f"""
 당신은 LG U+ 통신 요금제 추천 전문가입니다.
 
@@ -333,7 +337,6 @@ async def search_and_recommend(request: Request):
 - (추천 사유는 간결하고 명확하게 한 줄)\n
 \n추천 총 정리 한 줄\n\n
 
-
 7. 사용자 표현 해석 기준:
 | 표현               | 해석             |
 |--------------------|------------------|
@@ -359,6 +362,7 @@ async def search_and_recommend(request: Request):
 → 이 최종 메시지를 반드시 반영하여 추천 결과를 제시하세요.
 """
 
+
     async def get_response():
         stream = await asyncio.to_thread(lambda: openai.chat.completions.create(
             model="gpt-4.1-mini",
@@ -372,7 +376,6 @@ async def search_and_recommend(request: Request):
 
         buffer = ""
         first_line_sent = False
-
         try:
             for chunk in stream:
                 if chunk.choices[0].delta and chunk.choices[0].delta.content:
@@ -386,22 +389,17 @@ async def search_and_recommend(request: Request):
                                 await asyncio.sleep(0.005)
                             first_line_sent = True
                             break
-                        except Exception:
+                        except:
                             continue
         except Exception as e:
             print("GPT stream error:", e)
 
         if not first_line_sent:
-            if ambiguous_count > 3:
+            if ambiguous_count >= 3:
                 yield json.dumps({"status": False, "item": []}) + "\n"
-                yield "고객센터로 연결해드리겠습니다.\n"
+                yield "\n\n고객센터로 연결해드리겠습니다."
             else:
                 yield json.dumps({"status": False, "item": []}) + "\n"
-                yield "질문을 잘 알아듣지 못했어요.\n"
+                yield "\n\n질문을 잘 알아듣지 못했어요."
 
-    response = StreamingResponse(get_response(), media_type="text/plain")
-    return response
-
-
-
-
+    return StreamingResponse(get_response(), media_type="text/plain")
