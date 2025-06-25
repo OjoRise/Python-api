@@ -223,10 +223,6 @@ async def search_and_recommend(request: Request):
         formatted_history, user_profile_raw, query, eligibilityList
     )
 
-    print(update_profile_with_gpt(
-        formatted_history, user_profile_raw, query, eligibilityList
-    ))
-
     print(new_user_profile)
     print(new_eligibilityList)
     
@@ -404,7 +400,6 @@ async def search_and_recommend(request: Request):
                 yield "질문을 잘 알아듣지 못했어요.\n"
 
     response = StreamingResponse(get_response(), media_type="text/plain")
-    response.headers["Access-Control-Allow-Origin"] = "http://localhost:3000"
     return response
 
 
