@@ -35,7 +35,7 @@ qdrant = QdrantClient(
     url=os.getenv("QDRANT_URL"),
     api_key=os.getenv("QDRANT_API_KEY"),
     prefer_grpc=False,
-    timeout=10.0,
+    timeout=30.0,
 )
 
 collection_name = "plan_collection"
@@ -122,6 +122,7 @@ async def search_and_recommend(request: Request):
         elif age >= 65:
             eligibilityList.append("OLD")
 
+    print(formatted_history, query)
     system_prompt = f"""
 당신은 통신 요금제 추천을 위한 사용자 프로필 보정 도우미입니다.
 
@@ -132,64 +133,68 @@ async def search_and_recommend(request: Request):
 ④ 초기 eligibilityList
 
 🎯 먼저 다음을 판단하세요:
-- 질문이 **요금제 추천 요청**인지
+- 입력이 **요금제 추천 요청**인지
 - 아니면 **인삿말 / 의미 없는 말 / 설명 요청**인지
+- 그 외에는 모두 의미 없는 말로 처리하세요.
 
 ────────────────────────
 
-📌 만약 아래에 해당한다면 반드시 해당 JSON만 출력하세요:
+📌 아래 조건 중 하나라도 만족한다면, 반드시 해당 JSON만 출력하세요:
 
-1️⃣ 인삿말 또는 자기소개 포함된 경우:
+**요금제 추천 요청이 아닌, 요금제 설명만 요청한 경우**
+- 예시: "5G 시그니처 요금제 설명해줘", "청년 요금제 어떤 거 있어?", "시니어 요금제가 뭐야?" 등
+→ 설명만 출력하고 추천은 하지 마세요.
+
+**인삿말 또는 자기소개가 포함된 경우**
+- 예시: "안녕", "하이", "ㅎㅇ", "반가워", "방가", "헬로", "너는 누구니", "소개해줘" 등
+→ 아래 응답 고정 출력:
 {{
   "status": false,
   "item": [],
   "message": "\\n\\n안녕하세요, 여러분들을 도와줄 AI 챗봇 홀맨입니다."
 }}
 
-2️⃣ 의미 없는 말/감탄사/테스트 입력:
-→ ambiguous_count >= 3 이면:
+**의미 없는 단어 / 감탄사 / 테스트 입력일 경우**
+- 예시: ㅇㅇ, ㅋㅋ, ㅁㄴㅇㄹ, 테스트, asdf, ??? 등
+→ ambiguous_count ≥ 3일 경우:
 {{
   "status": false,
   "item": [],
-  "message": "\\n\\n질문을 잘 알아듣지 못했어요. LG U+ 고객센터에 문의해주시길 바랍니다."
+  "message": "\\n\\n질문을 잘 이해하지 못했어요. LG U+ 고객센터에 문의해주시길 바랍니다."
 }}
 
-→ ambiguous_count < 3 이면:
+→ ambiguous_count < 3일 경우:
 {{
   "status": false,
   "item": [],
-  "message": "\\n\\n질문을 잘 알아듣지 못했어요."
+  "message": "\\n\\n질문을 잘 이해하지 못했어요."
 }}
-
-3️⃣ 요금제에 대한 설명만 필요한 경우:
-→ 설명만 하세요. 추천은 하지 마세요.
 
 ────────────────────────
 
-📦 나머지 경우(즉, 요금제 추천 요청일 경우)에는 다음을 수행하세요:
+📦 요금제 **추천 요청**이라면 다음을 수행하세요:
 
-1. userProfile에는 다음 필드를 반드시 포함:
+1. userProfile에는 반드시 다음 항목 포함:
    - birthdate, telecomProvider, planName, familyBundle, tongName
 
-2. birthdate가 있다면 age 계산 → eligibilityList 보정:
+2. birthdate가 있다면 나이를 계산해 eligibilityList 보정:
    - 나이 ≤ 12세: 'KID'
    - 나이 ≤ 18세: 'BOY'
    - 나이 ≤ 34세: 'YOUTH'
    - 나이 ≥ 65세: 'OLD'
 
-3. 질문이나 히스토리에 연령 언급되면 그에 맞는 eligibility를 추가
+3. 질문/대화 히스토리에 나이에 대한 언급이 있다면 해당 eligibility 추가
 
-4. eligibilityList는 항상 ['ALL'] 포함
+4. eligibilityList에는 항상 'ALL'을 포함하세요
 
-5. 기존 userProfile이 틀려도 문맥상 확실하다면 수정
+5. 기존 userProfile이 틀려도 문맥상 확실하다면 수정하세요
 
-🔐 최종 출력은 반드시 아래 JSON 형식으로만:
+🔐 최종 출력 형식은 아래와 같이 고정하세요:
 {{
-  "userProfile": {{...}},
-  "eligibilityList": ["ALL", "OLD"]
+  "userProfile": {{ ... }},
+  "eligibilityList": ["ALL", "YOUTH"]
 }}
 """
-
 
     user_prompt = f"""
 ### 현재 질문
@@ -218,15 +223,17 @@ async def search_and_recommend(request: Request):
     )
 
     content = gpt_response.choices[0].message.content
+    print(content)
     try:
         parsed = json.loads(content)
+        print(parsed)
         if parsed.get("status") is False:
             async def stream_json_message():
                 json_str = json.dumps(parsed, ensure_ascii=False)
                 for ch in json_str:
                     yield ch
                     await asyncio.sleep(0.002)
-                yield "\n"  # JSON 끝난 후 구분자
+                yield "\n"
                 for ch in parsed.get("message", ""):
                     yield ch
                     await asyncio.sleep(0.005)
