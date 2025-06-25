@@ -25,7 +25,7 @@ embedding_model = "text-embedding-3-small"
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8080"],
+    allow_origins=["http://localhost:3000", "http://localhost:8080", "https://yople.vercel.app", "https://backend-ojorise.onrender.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
