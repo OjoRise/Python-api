@@ -42,7 +42,7 @@ qdrant = QdrantClient(
 
 collection_name = "plan_collection"
 required_vector_dim = 1536
-fields_to_index = ["eligibility", "mobileType", "isOnline"]
+fields_to_index = ["eligibility", "mobileType"]
 
 class Plan(BaseModel):
     planId: int
