@@ -5,3 +5,4 @@ qdrant-client
 sentence-transformers
 openai
 python-dotenv
+python-dateutil
