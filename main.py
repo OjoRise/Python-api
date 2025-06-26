@@ -160,14 +160,14 @@ async def search_and_recommend(request: Request):
 {{
   "status": false,
   "item": [],
-  "message": "\\n\\n질문을 잘 이해하지 못했어요. LG U+ 고객센터에 문의해주시길 바랍니다."
+  "message": "\\n\\n질문을 이해하지 못했어요. 더 정확한 안내는 LG U+ 고객센터에 문의해주시기 바랍니다."
 }}
 
 → ambiguous_count < 3일 경우:
 {{
   "status": false,
   "item": [],
-  "message": "\\n\\n질문을 잘 이해하지 못했어요."
+  "message": "\\n\\n질문을 이해하지 못했어요."
 }}
 
 ────────────────────────
@@ -277,11 +277,16 @@ async def search_and_recommend(request: Request):
 **사용자에게 해당되는 요금제 유형은 다음과 같습니다: {new_eligibilityList}**  
 
 ※ 아래 문장은 모두 명확한 요금제 추천 요청입니다. 절대 인삿말로 오인하지 말고 반드시 요금제를 추천해야 합니다:
-- "시니어 요금제 추천해줘"
-- "노인 요금제 추천해줘"
-- "아이 요금제 추천해줘" → 여기서 '아이'는 어린이 요금제 의미입니다.
-- "초등학생 요금제 뭐가 있어?"
-- "어린이 요금제 알려줘"
+- "시니어 요금제 추천해줘"  
+- "노인 요금제 추천해줘"  
+- "아이 요금제 추천해줘" → 여기서 '아이'는 '어린이 요금제'를 의미합니다.  
+- "초등학생 요금제 뭐가 있어?"  
+- "어린이 요금제 알려줘"  
+- "5G 요금제 추천해줘"
+- "LTE 요금제 뭐가 좋아?"
+- "온라인 요금제 뭐 있음?" 또는 "온라인 요금제 말고 다른거" 또는 "온라인 요금제로"
+- "e-sim 요금제 알려줘" 또는 "e심 요금제 추천해줘"
+- "다른건 더 없어?"
 
 3. 인삿말(“ㅎㅇ”, “하이”, “hello”, “hi”, “안녕”, “^^”)이나 자기소개 요청 메시지는 **절대 요금제를 추천하지 말고** 아래 형식으로 응답하세요:
 {{
@@ -345,10 +350,10 @@ async def search_and_recommend(request: Request):
 }}
 
 9. **반드시 아래 "message" 필드 출력 형식에 맞춰서 출력하세요.**  
-※ \n\n 으로 시작하고 \n\n 으로 끝나야 합니다.  
+※ \n\n\n 으로 시작하고 \n\n 으로 끝나야 합니다.  
 ※ 요금제 이름 옆에 "<", ">" 등 아무것도 붙이지 마세요.
 
-\n\n  
+\n\n\n
 정확한 요금제 이름만\n  
 \n월 요금:  **정확한 숫자(천 단위 구분 쉼표 포함)**원\n데이터 제공량: \n음성통화: \nSMS: \n주요 혜택: \n\n
 - (추천 사유는 간결하고 명확하게 한 줄)\n  
@@ -360,7 +365,8 @@ async def search_and_recommend(request: Request):
 정확한 요금제 이름만\n  
 \n월 요금:  **정확한 숫자(천 단위 구분 쉼표 포함)**원\n데이터 제공량: \n음성통화: \nSMS: \n주요 혜택: \n\n
 - (추천 사유는 간결하고 명확하게 한 줄)\n
-\n(추천 총 정리를 간결하고 명확하게 한 줄)\n\n
+\n무제한 데이터를 자주 사용하고 제휴 혜택을 누리려는 사용자에게 적합한 요금제입니다.\n\n
+➡ 이 마지막 한 줄만 총 정리로 출력하세요. 위 문장을 그대로 출력하지 마세요.
 
 10. 사용자 표현 해석 기준:
 | 표현               | 해석             |
@@ -422,9 +428,9 @@ async def search_and_recommend(request: Request):
         if not first_line_sent:
             if ambiguous_count >= 3:
                 yield json.dumps({"status": False, "item": []}) + "\n"
-                yield "\n\n고객센터로 연결해드리겠습니다."
+                yield "\n\n질문을 이해하지 못했어요. 더 정확한 안내는 LG U+ 고객센터에 문의해주시기 바랍니다."
             else:
                 yield json.dumps({"status": False, "item": []}) + "\n"
-                yield "\n\n질문을 잘 알아듣지 못했어요."
+                yield "\n\n질문을 이해하지 못했어요."
 
     return StreamingResponse(get_response(), media_type="text/plain")
