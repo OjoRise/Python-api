@@ -77,7 +77,7 @@ def vectorize_plans(plans: List[Plan]):
         collection_name=collection_name,
         vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
     )
-    for field in ["eligibility", "mobileType"]:
+    for field in ["eligibility", "mobileType", "isOnline"]:
         qdrant.create_payload_index(
             collection_name=collection_name,
             field_name=field,
@@ -145,7 +145,7 @@ async def search_and_recommend(request: Request):
 - 예시: "5G 시그니처 요금제 설명해줘", "청년 요금제 어떤 거 있어?", "시니어 요금제가 뭐야?" 등
 → 설명만 출력하고 추천은 하지 마세요.
 
-**인삿말 또는 자기소개가 포함된 경우**
+**현재 질문에 인삿말 또는 자기소개가 포함된 경우**
 - 예시: "안녕", "하이", "ㅎㅇ", "반가워", "방가", "헬로", "너는 누구니", "소개해줘" 등
 → 아래 응답 고정 출력:
 {{
@@ -301,19 +301,37 @@ async def search_and_recommend(request: Request):
 {{
 "status": false,
 "item": [],
-"message": "\\n\\n고객센터로 연결해드리겠습니다."
+"message": "\\n\\n질문을 이해하지 못했어요. 더 정확한 안내는 LG U+ 고객센터에 문의해주시기 바랍니다."
 }}
 
 - ambiguous_count < 3인 경우 아래 응답을 **무조건 그대로** 출력하세요:
 {{
 "status": false,
 "item": [],
-"message": "\\n\\n질문을 잘 알아듣지 못했어요."
+"message": "\\n\\n질문을 이해하지 못했어요."
 }}
 
-4-1. 요금제 추천이 아니지만 요금제와 관련된 질문에는 **반드시 요금제를 추천하지 말고** 해당 질문에 대한 대답을 해주세요.
+5. 요금제 추천이 아니지만 요금제와 관련된 질문에는 **반드시 요금제를 추천하지 말고** 해당 질문에 대한 대답을 해주세요.
 
-5. 추천이 가능할 때 출력은 반드시 아래 JSON 형식을 따릅니다:  
+6. userProfile의 tongName은 사용자의 데이터 사용량 패턴을 나타냅니다. 아래 범위를 참고해 적절한 해석을 해주세요:
+
+- 0% 이상 ~ 16% 미만: "와이파이 유목민"
+- 16% 이상 ~ 32% 미만: "보조금 헌터"
+- 32% 이상 ~ 48% 미만: "가성비 교신도"
+- 48% 이상 ~ 64% 미만: "중간값 장인"
+- 64% 이상 ~ 80% 미만: "폭주 억제기"
+- 80% 이상 ~ 100% 이하: "무제한의 민족"
+
+각 tongName은 데이터 소비 성향을 묘사한 레이블입니다. 해석 시 이 의미를 고려해주세요.
+
+7. userProfile의 isOnline 값은 요금제 유형을 나타냅니다.
+
+- isOnline이 1일 경우: 온라인 전용 요금제 (eSIM 기반 요금제)
+- isOnline이 0일 경우: 일반 오프라인 요금제 (매장 개통 요금제 포함)
+
+이 구분을 해석 및 추천에 반드시 반영해주세요.
+
+8. 추천이 가능할 때 출력은 반드시 아래 JSON 형식을 따릅니다:  
 (링크는 반드시 {plans_json} 안의 planUrl 값으로)
 
 {{
@@ -326,7 +344,7 @@ async def search_and_recommend(request: Request):
   "message": "<아래 형식으로 작성한 설명>"
 }}
 
-6. **반드시 아래 "message" 필드 출력 형식에 맞춰서 출력하세요.**  
+9. **반드시 아래 "message" 필드 출력 형식에 맞춰서 출력하세요.**  
 ※ \n\n 으로 시작하고 \n\n 으로 끝나야 합니다.  
 ※ 요금제 이름 옆에 "<", ">" 등 아무것도 붙이지 마세요.
 
@@ -342,9 +360,9 @@ async def search_and_recommend(request: Request):
 정확한 요금제 이름만\n  
 \n월 요금:  **정확한 숫자(천 단위 구분 쉼표 포함)**원\n데이터 제공량: \n음성통화: \nSMS: \n주요 혜택: \n\n
 - (추천 사유는 간결하고 명확하게 한 줄)\n
-\n추천 총 정리 한 줄\n\n
+\n(추천 총 정리를 간결하고 명확하게 한 줄)\n\n
 
-7. 사용자 표현 해석 기준:
+10. 사용자 표현 해석 기준:
 | 표현               | 해석             |
 |--------------------|------------------|
 | 유튜브를 자주 봐요  | 데이터 사용량 많음 |
@@ -352,7 +370,7 @@ async def search_and_recommend(request: Request):
 | 웹서핑만 해요       | 데이터 사용량 적음 |
 | 영상을 조금만 봐요  | 데이터 사용량 적음 |
 
-8. 사용자의 현재 요금제와 이름이 **같은 LG U+ 요금제는 절대 추천하지 마세요.**
+11. 사용자의 현재 요금제와 이름이 **같은 LG U+ 요금제는 절대 추천하지 마세요.**
 
 ────────────────────────
 
